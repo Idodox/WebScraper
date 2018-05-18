@@ -9,11 +9,11 @@ from sys import exc_info
 startTime = datetime.now()
 
 # TODO: add user-definable options for scope of download
-# TODO: make soup searches more efficient (so don't need soup left & right)
 # TODO: if title starts with brand name, remove it from title.
 # TODO: Sort companies by number items when scraping (hopefully shorter total time to scrape)
 # TODO: add categories table
 # TODO: add brands table
+# TODO: Update products MSRP/TITLE/etc with new changes (provided same link)
 
 
 # Constants
@@ -49,8 +49,7 @@ def get_product_ids(products):
     query = """ SELECT product_id, link FROM products WHERE link in ('{}'); """.format(products)
 
     try:
-        conn = create_engine('mysql+pymysql://root:idofarhi@localhost:3306/scraping?charset=utf8', echo=False,
-                             encoding='UTF-8')
+        conn = create_engine('mysql+pymysql://root:idofarhi@localhost:3306/scraping?charset=utf8', echo=False, encoding='UTF-8')
 
         query_result = pd.read_sql(query, conn)
 
@@ -110,25 +109,29 @@ def get_sql_table(table_name):
 
 
 def save_data_to_database(new_products_inventory_df):
-    """ Runs the process of saving all the new data to the database tables """
+    """ Runs the process of adding the scraped data to the database tables """
 
     # Getting the current products table to compare with the new products:
     print('\033[92m' + 'Getting the current products table to compare with the new products:' + '\033[0m')
     products_df = get_sql_table('products')
+
     # Find differences between df of new products and products pulled from products table:
     print('\033[92m' + 'Finding any new products...' + '\033[0m')
-    df_to_products_db = products_df.merge(new_products_inventory_df, on=['category', 'brand', 'title', 'msrp', 'link'],
-                                    how='outer', indicator=True).query("_merge == 'right_only'").drop('_merge', 1)
+    df_to_products_db = products_df.merge(new_products_inventory_df, on='link', how='outer', indicator=True)\
+        .query("_merge == 'right_only'").drop(['category_x', 'brand_x', 'title_x', 'msrp_x', '_merge'], 1)
+    df_to_products_db.columns = df_to_products_db.columns.str.replace('_y', '')
+
     if len(df_to_products_db) == 0:
         print('\033[92m' + 'No new products found' + '\033[0m')
     else:
         print('\033[92m' + str(len(df_to_products_db)) + ' new products found. Writing them to products db...' + '\033[0m')
-        # Write new products (if any) to products database:
+        # Write new products to products database:
         write_to_database(df_to_products_db, 'products')
 
     # Get product id's for collected products (need for reference in inventory db):
     print('\033[92m' + "Getting product ID's for collected products" + '\033[0m')
     product_ids = get_product_ids("','".join(list(pd.Series(new_products_inventory_df['link']))))
+
     # Combime the product_id's from database (based on unique link) to collected products:
     df_to_inventory_db = new_products_inventory_df.merge(product_ids, on='link', how='outer')
     print('\033[92m' + "Writing scraped data to db..." + '\033[0m')
@@ -144,7 +147,6 @@ def run_site_crawl(brands_page_link):
 
     # Step 1: get all the links for different brands from brands page
     brands_link_string_list = get_brands_page_links(brands_page_link)
-    global NUM_CONCURRENT_PROCESSES, NUM_BRANDS_TO_SCRAP
     products_details_list = []
 
     def run_through_brands_links(brand):
@@ -162,6 +164,7 @@ def run_site_crawl(brands_page_link):
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_CONCURRENT_PROCESSES) as executer:
         executer.map(run_through_brands_links, brands_link_string_list[STARTING_BRAND_NUM:])
+
     print('\033[91m' + '********** Finished ALL collections **********' + '\033[0m')
 
     # Putting all the collected brands' products in a dataframe:
@@ -172,11 +175,18 @@ def run_site_crawl(brands_page_link):
 
 def get_product_info(link):
     """ Returns product_id, category, title, msrp, current price, sizes and colors"""
-    soup, left_soup, right_soup = divide_page_sections(link)
+    soup = get_soup(link)
     category = get_category(soup)
-    title, msrp, current_price = get_title_msrp_price(left_soup, right_soup)
-    sizes = get_sizes(right_soup)
-    colors = get_colors(right_soup)
+    title = soup.find('h1', class_="title").text
+
+    # Only want to run scrape if OoS box doesn't exist
+    if soup.find('div', class_ = "oos_box_top") is None:
+        msrp, current_price = get_title_msrp_price(soup)
+        sizes = get_sizes(soup)
+        colors = get_colors(soup)
+    else: # If this runs item is out of stock
+        msrp, current_price, sizes, colors = None, None, None, None
+
     # print(sizes, colors)
 
     return category, title, msrp, current_price, sizes, colors
@@ -236,21 +246,12 @@ def get_details_from_brand_links_list(list_of_links, brand):
     for i, link in enumerate(list_of_links):
 
         category, title, msrp, current_price, sizes, colors = get_product_info(link)
-        print(str(i+1) + '/' + str(len(list_of_links))+ ' |ctgry:', category, '|ttl:', title, '|msrp:', msrp, '|price:', current_price, '|sizes:', sizes, '|colors:', colors)
+        print(brand, str(i + 1) + '/' + str(len(list_of_links)), title)
+        # print(str(i+1) + '/' + str(len(list_of_links))+ ' |ctgry:', category, '|ttl:', title, '|msrp:', msrp, '|price:', current_price, '|sizes:', sizes, '|colors:', colors)
 
         lst.append([datetime.now().strftime("%y-%m-%d-%H-%M"), category, brand, title, msrp, current_price, sizes, colors, link[35:]])
 
     return lst
-
-
-
-def divide_page_sections(link):
-    """ Divide the page into large sections """
-    soup = get_soup(link)
-    left_soup = (soup.find_all('div'))[1].contents[1].find('div', id='product_page_left')
-    right_soup = (soup.find_all('div'))[1].contents[1].find('div', id='product_page_right')
-
-    return soup, left_soup, right_soup
 
 
 def get_category(soup):
@@ -266,28 +267,27 @@ def get_category(soup):
     return category.replace("_", " ")
 
 
-def get_title_msrp_price(left_soup, right_soup):
+def get_title_msrp_price(soup):
     # TODO: Currently only takes lowest price. Add ability to pull price by color/size
     """ Get product title, MSRP and price """
     # we split the price at a space and take the first product so that we get
     # the lowest price in case the product has a range of prices
-    current_price = float(right_soup.find('span', itemprop='price').text.split(' ', 1)[0][1:])
-    title = left_soup.find('h1', class_="title").text
+    current_price = float(soup.find('span', itemprop='price').text.split(' ', 1)[0][1:])
     try:
         # Catch exception in case no msrp found
-        msrp = float(right_soup.find('span', itemprop='price_msrp').text[1:])
+        msrp = float(soup.find('span', itemprop='price_msrp').text[1:])
     except AttributeError:
         # no different price & msrp. They are equal.
         msrp = current_price
 
-    return title, msrp, current_price
+    return msrp, current_price
 
 
-def get_sizes(right_soup):
+def get_sizes(soup):
     """ Get the sizes """
     sizes = []
     try:
-        size_soup = right_soup.find_all('div', class_='choice')
+        size_soup = soup.find_all('div', class_='choice')
         for product in size_soup:
             sizes.append(product.find(class_='size_text').text)
         if sizes == []:
@@ -298,11 +298,11 @@ def get_sizes(right_soup):
     return ",".join(sizes)
 
 
-def get_colors(right_soup):
+def get_colors(soup):
     """ Get the colors """
     colors = []
     try:
-        color_soup = right_soup.find('div', class_='color').find_all('img')
+        color_soup = soup.find('div', class_='color').find_all('img')
         for product in color_soup:
             colors.append(product.get('id'))
     except AttributeError:
@@ -320,7 +320,6 @@ def get_soup(link):
     soup = bs.BeautifulSoup(sauce.content, 'lxml')
 
     return soup
-
 
 
 if __name__ == '__main__':
