@@ -5,6 +5,7 @@ import concurrent.futures
 from datetime import datetime
 from sqlalchemy import create_engine
 from sys import exc_info
+import logging
 
 startTime = datetime.now()
 
@@ -38,6 +39,9 @@ def main():
 
     return
 
+
+class WebsiteDownException(Exception):
+    pass
 
 """ ****************************************************************** """
 """ *************** DATABASE MANAGEMENT FUNCTIONS ******************** """
@@ -148,11 +152,18 @@ def run_site_crawl(brands_page_link):
     # Step 1: get all the links for different brands from brands page
     brands_link_string_list = get_brands_page_links(brands_page_link)
     products_details_list = []
+    num_items = 0
 
     def run_through_brands_links(brand):
 
         # Step 2: iterate through all brands and get a list of links for all their products:
         product_links = get_product_links_for_brand(brand)
+
+        # Count how many items to scrape
+        nonlocal num_items
+        num_items += len(product_links)
+        print('sum items so far: '+str(num_items), '| Number of items for brand ' + brand[1], ':' + str(len(product_links)))
+
         # Step 3: get the details for all products in the brand's link list:
         print('\033[93m' + 'Starting crawl for brand: ' + brand[1]+ '\033[0m')
         brand_products_details_list = get_details_from_brand_links_list(product_links, brand[1])
@@ -314,10 +325,17 @@ def get_colors(soup):
 
 def get_soup(link):
     """ Returns html code from link """
-    sauce = requests.get(link)
-    sauce.encoding = 'ISO-8859-1'
+    try:
+        sauce = requests.get(link, timeout = 10)
+        sauce.encoding = 'ISO-8859-1'
 
-    soup = bs.BeautifulSoup(sauce.content, 'lxml')
+        soup = bs.BeautifulSoup(sauce.content, 'lxml')
+        if soup.status_code >= 400:
+            logging.warning("Website %s returned status_code=%s" % (link, soup.status_code))
+            raise WebsiteDownException()
+    except requests.exceptions.RequestException:
+        logging.warning("Timeout expired for website %s" % link)
+        raise WebsiteDownException()
 
     return soup
 
