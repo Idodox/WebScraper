@@ -12,9 +12,9 @@ startTime = datetime.now()
 # TODO: add user-definable options for scope of download
 # TODO: if title starts with brand name, remove it from title.
 # TODO: Sort companies by number items when scraping (hopefully shorter total time to scrape)
-# TODO: add categories table
-# TODO: add brands table
+# TODO: add categories table and brands table
 # TODO: Update products MSRP/TITLE/etc with new changes (provided same link)
+# TODO: Improve logging and usage of logging library
 
 
 # Constants
@@ -174,7 +174,9 @@ def run_site_crawl(brands_page_link):
         return
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_CONCURRENT_PROCESSES) as executer:
-        executer.map(run_through_brands_links, brands_link_string_list[STARTING_BRAND_NUM:])
+        executer.map(run_through_brands_links, brands_link_string_list[27:28], timeout= 500)
+        # for fut in concurrent.futures.as_completed(fs):
+        #     fut.result()
 
     print('\033[91m' + '********** Finished ALL collections **********' + '\033[0m')
 
@@ -329,10 +331,10 @@ def get_soup(link):
         sauce = requests.get(link, timeout = 10)
         sauce.encoding = 'ISO-8859-1'
 
-        soup = bs.BeautifulSoup(sauce.content, 'lxml')
-        if soup.status_code >= 400:
-            logging.warning("Website %s returned status_code=%s" % (link, soup.status_code))
+        if sauce.status_code >= 400:
+            logging.warning("Website %s returned status_code=%s" % (link, sauce.status_code))
             raise WebsiteDownException()
+        soup = bs.BeautifulSoup(sauce.content, 'lxml')
     except requests.exceptions.RequestException:
         logging.warning("Timeout expired for website %s" % link)
         raise WebsiteDownException()
