@@ -11,17 +11,19 @@ startTime = datetime.now()
 
 # TODO: add user-definable options for scope of download
 # TODO: if title starts with brand name, remove it from title.
-# TODO: Sort companies by number items when scraping (hopefully shorter total time to scrape)
+# TODO: Sort companies by number items when scraping (shorter total time to scrape)
 # TODO: add categories table and brands table
 # TODO: Update products MSRP/TITLE/etc with new changes (provided same link)
 # TODO: Improve logging and usage of logging library
+# TODO: Add proper exception handling for concurrent futures library
 
 
 # Constants
 BRANDS_PAGE_LINK = 'https://www.peterglenn.com/brands'
 NUM_CONCURRENT_PROCESSES = 40
 STARTING_BRAND_NUM = 0 # Use 0 to do a full run
-# ENDING_BRAND_NUM = 50
+REQUEST_TIMEOUT = 10
+EXECUTER_TIMEOUT = 500
 
 
 def main():
@@ -173,8 +175,11 @@ def run_site_crawl(brands_page_link):
         products_details_list += brand_products_details_list
         return
 
+    # Test scrape for single brand
+    # run_through_brands_links(brands_link_string_list[27:28][0])
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_CONCURRENT_PROCESSES) as executer:
-        executer.map(run_through_brands_links, brands_link_string_list[27:28], timeout= 500)
+        executer.map(run_through_brands_links, brands_link_string_list, timeout= EXECUTER_TIMEOUT)
         # for fut in concurrent.futures.as_completed(fs):
         #     fut.result()
 
@@ -186,13 +191,14 @@ def run_site_crawl(brands_page_link):
     return new_products_inventory_df
 
 
-def get_product_info(link):
+# def get_product_info(link):
     """ Returns product_id, category, title, msrp, current price, sizes and colors"""
     soup = get_soup(link)
     category = get_category(soup)
     title = soup.find('h1', class_="title").text
 
-    # Only want to run scrape if OoS box doesn't exist
+    # Only want to run this portion if item is in stock
+    # So we search for the out of stock box
     if soup.find('div', class_ = "oos_box_top") is None:
         msrp, current_price = get_title_msrp_price(soup)
         sizes = get_sizes(soup)
@@ -285,13 +291,15 @@ def get_title_msrp_price(soup):
     """ Get product title, MSRP and price """
     # we split the price at a space and take the first product so that we get
     # the lowest price in case the product has a range of prices
-    current_price = float(soup.find('span', itemprop='price').text.split(' ', 1)[0][1:])
+    current_price = float(soup.find('span', itemprop='price').text.split(' ', 1)[0][1:].replace(',',''))
     try:
         # Catch exception in case no msrp found
-        msrp = float(soup.find('span', itemprop='price_msrp').text[1:])
+        # Remember to remove ',' before converting to float (in case msrp is more than $999.99)
+        msrp = float(soup.find('span', itemprop='price_msrp').text[1:].replace(',',''))
     except AttributeError:
         # no different price & msrp. They are equal.
         msrp = current_price
+
 
     return msrp, current_price
 
@@ -328,7 +336,7 @@ def get_colors(soup):
 def get_soup(link):
     """ Returns html code from link """
     try:
-        sauce = requests.get(link, timeout = 10)
+        sauce = requests.get(link, timeout = REQUEST_TIMEOUT)
         sauce.encoding = 'ISO-8859-1'
 
         if sauce.status_code >= 400:
@@ -336,7 +344,7 @@ def get_soup(link):
             raise WebsiteDownException()
         soup = bs.BeautifulSoup(sauce.content, 'lxml')
     except requests.exceptions.RequestException:
-        logging.warning("Timeout expired for website %s" % link)
+        logging.warning("Timeout expired for website '{0}'" .format(link))
         raise WebsiteDownException()
 
     return soup
